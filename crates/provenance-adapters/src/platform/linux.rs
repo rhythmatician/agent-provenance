@@ -9,8 +9,6 @@ use std::ffi::OsString;
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStringExt;
 #[cfg(target_os = "linux")]
-use std::os::unix::process::CommandExt;
-#[cfg(target_os = "linux")]
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
@@ -166,45 +164,6 @@ impl LinuxCaptureAdapter {
 }
 
 #[cfg(target_os = "linux")]
-fn is_path_in_scope(
-    path: &std::path::Path,
-    workspace: &std::path::Path,
-    db_path: &std::path::Path,
-) -> bool {
-    // Exclude recorder-owned files: .provenance/ and the DB file itself (and its wal/shm)
-    // Exclude build outputs and VCS: target/, .git/, and common generated dirs
-    let Ok(relative) = path.strip_prefix(workspace) else {
-        return false;
-    };
-    let first_component = relative
-        .components()
-        .next()
-        .and_then(|c| c.as_os_str().to_str())
-        .unwrap_or("");
-    // Always exclude these top-level dirs
-    if first_component == ".provenance" || first_component == ".git" || first_component == "target"
-    {
-        return false;
-    }
-    // Exclude the DB file and its WAL/SHM if they are inside workspace (default is .provenance/provenance.db)
-    if path == db_path
-        || path == db_path.with_extension("db-wal")
-        || path == db_path.with_extension("db-shm")
-    {
-        return false;
-    }
-    // Also exclude any path that is under .provenance or target even if nested (defensive)
-    for comp in relative.components() {
-        if let Some(s) = comp.as_os_str().to_str() {
-            if s == ".provenance" || s == "target" || s == ".git" {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-#[cfg(target_os = "linux")]
 impl ExecutionCapture for LinuxCaptureAdapter {
     fn capture(
         &mut self,
@@ -224,6 +183,12 @@ impl ExecutionCapture for LinuxCaptureAdapter {
         let command = request.command().clone();
         let working_dir_os = Self::native_path_to_os_string(command.working_directory());
         let working_dir_path = Path::new(&working_dir_os).to_path_buf();
+        // Resolve WorkspaceScope: use explicit scope from request if provided (which contains the resolved DB path),
+        // otherwise fall back to a scope that excludes .provenance/target/.git and the default DB location.
+        let workspace_scope = request.workspace_scope().cloned().unwrap_or_else(|| {
+            let default_db = working_dir_path.join(".provenance").join("provenance.db");
+            provenance_domain::WorkspaceScope::new(working_dir_path.clone(), Some(default_db))
+        });
 
         // Workspace state tracking
         let mut current_workspace = request
@@ -381,7 +346,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
             ))?;
             fs_gap_emitted = true;
             // Drop the watcher to avoid further events
-            drop(fs_watcher);
+            drop(fs_watcher.take());
         }
 
         // Process tree tracking
@@ -412,10 +377,9 @@ impl ExecutionCapture for LinuxCaptureAdapter {
              pid_map: &HashMap<u32, (ProcessInstanceId, Option<ProcessInstanceId>, u64)>|
              -> Option<ProcessInstanceId> { pid_map.get(&ppid).map(|(id, _, _)| *id) };
 
-        let mut root_status: Option<std::process::ExitStatus> = None;
         let mut iterations: usize = 0;
 
-        loop {
+        let root_status = loop {
             iterations += 1;
 
             if terminated.load(Ordering::Relaxed) {
@@ -429,10 +393,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                     nix::sys::signal::Signal::SIGKILL,
                 );
                 match child.wait() {
-                    Ok(status) => {
-                        root_status = Some(status);
-                        break;
-                    }
+                    Ok(status) => break status,
                     Err(error) => {
                         return Err(CaptureError::Failed(format!(
                             "failed to wait after kill: {error}"
@@ -442,10 +403,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
             }
 
             match child.try_wait() {
-                Ok(Some(status)) => {
-                    root_status = Some(status);
-                    break;
-                }
+                Ok(Some(status)) => break status,
                 Ok(None) => {}
                 Err(error) => {
                     return Err(CaptureError::Failed(format!(
@@ -496,20 +454,10 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                             )) = event.kind
                             {
                                 if event.paths.len() == 2 {
-                                    let db_path =
-                                        working_dir_path.join(".provenance").join("provenance.db");
                                     if event.paths[0].strip_prefix(&working_dir_path).is_ok()
                                         && event.paths[1].strip_prefix(&working_dir_path).is_ok()
-                                        && is_path_in_scope(
-                                            &event.paths[0],
-                                            &working_dir_path,
-                                            &db_path,
-                                        )
-                                        && is_path_in_scope(
-                                            &event.paths[1],
-                                            &working_dir_path,
-                                            &db_path,
-                                        )
+                                        && workspace_scope.is_in_scope(&event.paths[0])
+                                        && workspace_scope.is_in_scope(&event.paths[1])
                                     {
                                         let from = Self::path_to_native_path(&event.paths[0]);
                                         let to = Self::path_to_native_path(&event.paths[1]);
@@ -555,9 +503,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                                 }
                                 // Enforce Workspace Scope: exclude recorder storage and build outputs
                                 // DB is at .provenance/provenance.db relative to workspace
-                                let db_path =
-                                    working_dir_path.join(".provenance").join("provenance.db");
-                                if !is_path_in_scope(path, &working_dir_path, &db_path) {
+                                if !workspace_scope.is_in_scope(path) {
                                     continue;
                                 }
                                 let native_path = Self::path_to_native_path(path);
@@ -787,7 +733,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
 
             let sleep_ms = if iterations < 100 { 5 } else { 10 };
             std::thread::sleep(Duration::from_millis(sleep_ms));
-        }
+        };
 
         // Final poll for file events after root exit
         std::thread::sleep(Duration::from_millis(100));
@@ -800,9 +746,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                             if path.strip_prefix(&working_dir_path).is_err() {
                                 continue;
                             }
-                            let db_path =
-                                working_dir_path.join(".provenance").join("provenance.db");
-                            if !is_path_in_scope(&path, &working_dir_path, &db_path) {
+                            if !workspace_scope.is_in_scope(&path) {
                                 continue;
                             }
                             let native_path = Self::path_to_native_path(&path);
@@ -960,7 +904,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
         // If file watcher overflowed, we already emitted gaps; otherwise, for ticket 5 we should NOT emit FileSystem gap when we succeeded
         // The FileSystem gap was only emitted if fs_watch_failed or overflow; if we succeeded, we have not emitted it, which is correct for ticket 5
 
-        let status = root_status.expect("root status should be Some");
+        let status = root_status;
         let termination = {
             use std::os::unix::process::ExitStatusExt;
             if let Some(code) = status.code() {

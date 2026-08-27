@@ -52,6 +52,10 @@ _Avoid_: Log file, transcript
 The recorder's identified state of the relevant workspace at a point in a session.
 _Avoid_: Commit, snapshot
 
+**Workspace Scope**:
+The set of filesystem paths considered relevant for workspace observations. Recorder-owned storage (the SQLite database and its WAL/SHM), version-control metadata (`.git/`), and build outputs (`target/`, and any path matched by `.gitignore` when known) are always excluded. A custom database path supplied via `--db` is automatically recorder-owned and excluded even when inside the workspace. Scope is passed explicitly to capture through a `WorkspaceScope` seam so the adapter cannot observe its own storage.
+_Avoid_: Working directory, watched directory
+
 **Validation Evidence**:
 A successful or failed check associated with the workspace state against which it executed.
 _Avoid_: Green check, proof

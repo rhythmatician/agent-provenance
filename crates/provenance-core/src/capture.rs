@@ -9,6 +9,7 @@ use crate::{Clock, EventStore, IdGenerator, RecorderError, SessionRecorder};
 pub struct CaptureRequest {
     command: CommandSpec,
     initial_workspace: Option<WorkspaceState>,
+    workspace_scope: Option<provenance_domain::WorkspaceScope>,
 }
 
 impl CaptureRequest {
@@ -16,6 +17,19 @@ impl CaptureRequest {
         Self {
             command,
             initial_workspace,
+            workspace_scope: None,
+        }
+    }
+
+    pub fn with_scope(
+        command: CommandSpec,
+        initial_workspace: Option<WorkspaceState>,
+        workspace_scope: provenance_domain::WorkspaceScope,
+    ) -> Self {
+        Self {
+            command,
+            initial_workspace,
+            workspace_scope: Some(workspace_scope),
         }
     }
 
@@ -25,6 +39,10 @@ impl CaptureRequest {
 
     pub fn initial_workspace(&self) -> Option<&WorkspaceState> {
         self.initial_workspace.as_ref()
+    }
+
+    pub fn workspace_scope(&self) -> Option<&provenance_domain::WorkspaceScope> {
+        self.workspace_scope.as_ref()
     }
 }
 

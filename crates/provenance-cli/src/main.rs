@@ -545,8 +545,9 @@ fn run_run(arguments: &[OsString]) -> u8 {
     let exe_native = os_string_to_native_path(&exe);
     let args_native: Vec<provenance_domain::NativeString> =
         exec_args.iter().map(os_string_to_native_string).collect();
+    let cwd_pathbuf = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let cwd_native = {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let cwd = &cwd_pathbuf;
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::ffi::OsStrExt;
@@ -561,6 +562,16 @@ fn run_run(arguments: &[OsString]) -> u8 {
     };
 
     let command_spec = provenance_domain::CommandSpec::new(exe_native, args_native, cwd_native);
+    // Build explicit WorkspaceScope so the adapter can exclude recorder-owned DB even at custom --db paths
+    let db_path_for_scope = if db_path.is_absolute() {
+        db_path.clone()
+    } else {
+        cwd_pathbuf.join(&db_path)
+    };
+    let workspace_scope = provenance_domain::WorkspaceScope::new(
+        cwd_pathbuf.clone(),
+        Some(db_path_for_scope.clone()),
+    );
 
     // Prepare store, clock, ids, and capture adapter
     let store = match provenance_adapters::SqliteEventStore::open(&db_path) {
@@ -578,9 +589,10 @@ fn run_run(arguments: &[OsString]) -> u8 {
     let ids = provenance_adapters::RandomIdGenerator;
     let mut capture = provenance_adapters::platform::linux::LinuxCaptureAdapter;
 
-    let request = provenance_core::CaptureRequest::new(
+    let request = provenance_core::CaptureRequest::with_scope(
         command_spec,
         Some(provenance_domain::WorkspaceState::initial()),
+        workspace_scope,
     );
 
     // Record execution (this will handle gaps and session lifecycle)

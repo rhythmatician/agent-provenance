@@ -15,7 +15,7 @@ pub use event::{
 pub use identity::{EventId, EventSequence, ProcessInstanceId, SessionId, SourceId};
 pub use native::{NativeEncoding, NativePath, NativeString, NativeStringError};
 pub use state::{
-    ContentDigest, DigestAlgorithm, StateError, WorkspaceGeneration, WorkspaceState,
-    WorkspaceTransition,
+    ContentDigest, DigestAlgorithm, StateError, WorkspaceGeneration, WorkspaceScope,
+    WorkspaceState, WorkspaceTransition,
 };
 pub use time::{MonotonicNanos, ObservationTime, UnixNanos};
