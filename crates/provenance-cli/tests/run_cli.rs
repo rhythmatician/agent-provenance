@@ -59,9 +59,11 @@ fn run_records_root_process_with_lossless_args_and_gaps() {
     // Load via SqliteEventStore and verify ProcessStarted with lossless args
     let store = SqliteEventStore::open(&db).expect("open db");
     let events = store.load(session_id).expect("load session");
+    // After tickets 4/5, ProcessTree and FileSystem gaps are only BufferOverflow when missed, not Unsupported
+    // For /bin/echo, we expect no gaps (or only BufferOverflow if fast-exit), so at least 4 events
     assert!(
-        events.len() >= 5,
-        "should have at least SessionStarted, ProcessStarted, 2 gaps, ProcessExited, SessionEnded"
+        events.len() >= 4,
+        "should have at least SessionStarted, ProcessStarted, ProcessExited, SessionEnded (gaps only on overflow)"
     );
 
     let mut has_started = false;
@@ -95,10 +97,11 @@ fn run_records_root_process_with_lossless_args_and_gaps() {
                 }
                 RuntimeObservationKind::ObservationGap(gap) => {
                     gap_scopes.push(gap.scope);
-                    assert_eq!(
-                        GapReason::Unsupported,
-                        gap.reason,
-                        "gap reason should be Unsupported for this slice"
+                    // After tickets 4/5, gaps are only BufferOverflow when missed, not Unsupported
+                    assert!(
+                        gap.reason == GapReason::BufferOverflow,
+                        "gap reason should be BufferOverflow if present, got {:?}",
+                        gap.reason
                     );
                 }
                 _ => {}
@@ -108,14 +111,9 @@ fn run_records_root_process_with_lossless_args_and_gaps() {
 
     assert!(has_started, "should have ProcessStarted");
     assert!(has_exited, "should have ProcessExited");
-    assert!(
-        gap_scopes.contains(&GapScope::ProcessTree),
-        "should have ProcessTree gap"
-    );
-    assert!(
-        gap_scopes.contains(&GapScope::FileSystem),
-        "should have FileSystem gap"
-    );
+    // ProcessTree and FileSystem gaps are now absent for successful capture (only BufferOverflow on miss)
+    // So we allow no gaps, but if present they must be BufferOverflow not Unsupported (checked below)
+    // No assertion that gaps must be present
     assert_eq!(Some("/bin/echo".to_owned()), found_exe);
     assert_eq!(
         Some(vec!["hello".to_owned(), "world".to_owned()]),
@@ -429,8 +427,8 @@ fn run_captures_child_and_grandchild_with_correct_parent_links() {
         "grandchild should have exited"
     );
 
-    // Check that we did NOT emit ProcessTree gap (since we captured successfully)
-    // But FileSystem gap should still be present
+    // After tickets 4/5, both gaps are only BufferOverflow when missed, not Unsupported
+    // For this test we expect no FileSystem gap (since workspace capture succeeded) and no ProcessTree gap
     let mut gap_scopes = Vec::new();
     for event in &events {
         if let Observation::Runtime(runtime) = event.observation() {
@@ -440,8 +438,8 @@ fn run_captures_child_and_grandchild_with_correct_parent_links() {
         }
     }
     assert!(
-        gap_scopes.contains(&GapScope::FileSystem),
-        "should have FileSystem gap"
+        !gap_scopes.contains(&GapScope::FileSystem),
+        "FileSystem gap should be absent after workspace capture (only BufferOverflow on overflow)"
     );
     // For successful tree capture, ProcessTree gap should be absent (unless fast-exit BufferOverflow)
     // Allow BufferOverflow gap but not Unsupported
