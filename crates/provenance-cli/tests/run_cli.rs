@@ -4,7 +4,9 @@ use std::process::Command;
 
 use provenance_adapters::SqliteEventStore;
 use provenance_core::EventStore;
-use provenance_domain::{GapReason, GapScope, Observation, RuntimeObservationKind, SessionId};
+use provenance_domain::{
+    GapReason, GapScope, Observation, ProcessInstanceId, RuntimeObservationKind, SessionId,
+};
 
 fn binary() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_provenance"))
@@ -320,6 +322,207 @@ fn run_cancellation_terminates_child_and_closes_session() {
     assert!(
         !ps_str.contains("sleep 10") || !status.success(),
         "sleep should have been terminated"
+    );
+
+    let _ = std::fs::remove_file(&db);
+    let _ = std::fs::remove_file(db.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db.with_extension("db-shm"));
+}
+
+#[test]
+fn run_captures_child_and_grandchild_with_correct_parent_links() {
+    let db = temp_db_path("child-grandchild");
+    let _ = std::fs::remove_file(&db);
+
+    // Root spawns child, child spawns grandchild
+    // Use sh to create hierarchy: root sh -> child sh -> grandchild sleep
+    let output = Command::new(binary())
+        .arg("run")
+        .arg("--db")
+        .arg(&db)
+        .arg("--")
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg("sh -c 'sleep 0.05 & wait' & wait")
+        .output()
+        .expect("spawn run child-grandchild");
+
+    assert_eq!(
+        0,
+        output.status.code().unwrap(),
+        "run should preserve exit 0, stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let session_hex = stderr
+        .lines()
+        .find(|l| l.starts_with("session "))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .expect("session hex");
+    let session_id = SessionId::from_u128(u128::from_str_radix(session_hex, 16).unwrap());
+
+    let store = SqliteEventStore::open(&db).expect("open db");
+    let events = store.load(session_id).expect("load");
+
+    // Collect all ProcessStarted
+    let mut started: Vec<(ProcessInstanceId, Option<ProcessInstanceId>, u32)> = Vec::new();
+    let mut pid_to_instance: std::collections::HashMap<u32, ProcessInstanceId> =
+        std::collections::HashMap::new();
+    for event in &events {
+        if let Observation::Runtime(runtime) = event.observation() {
+            if let RuntimeObservationKind::ProcessStarted(started_evt) = runtime.kind() {
+                let pid = started_evt.operating_system_pid.expect("os pid");
+                started.push((started_evt.process_id, started_evt.parent_process_id, pid));
+                pid_to_instance.insert(pid, started_evt.process_id);
+            }
+        }
+    }
+
+    // Should have at least 3 processes: root, child, grandchild
+    assert!(
+        started.len() >= 3,
+        "should have at least 3 ProcessStarted (root, child, grandchild), got {}: {:?}",
+        started.len(),
+        started
+    );
+
+    // Find root (parent is None)
+    let root = started
+        .iter()
+        .find(|(_, parent, _)| parent.is_none())
+        .expect("should have root with None parent");
+    let root_id = root.0;
+
+    // Find child whose parent is root
+    let child = started
+        .iter()
+        .find(|(_, parent, _)| *parent == Some(root_id))
+        .expect("should have child with parent root");
+    let child_id = child.0;
+
+    // Find grandchild whose parent is child
+    let grandchild = started
+        .iter()
+        .find(|(_, parent, _)| *parent == Some(child_id))
+        .expect("should have grandchild with parent child");
+    let grandchild_id = grandchild.0;
+
+    // Ensure distinct
+    assert_ne!(root_id, child_id);
+    assert_ne!(child_id, grandchild_id);
+    assert_ne!(root_id, grandchild_id);
+
+    // Also check that we have corresponding ProcessExited for each
+    let mut exited_ids = std::collections::HashSet::new();
+    for event in &events {
+        if let Observation::Runtime(runtime) = event.observation() {
+            if let RuntimeObservationKind::ProcessExited(exited) = runtime.kind() {
+                exited_ids.insert(exited.process_id);
+            }
+        }
+    }
+    assert!(exited_ids.contains(&root_id), "root should have exited");
+    assert!(exited_ids.contains(&child_id), "child should have exited");
+    assert!(
+        exited_ids.contains(&grandchild_id),
+        "grandchild should have exited"
+    );
+
+    // Check that we did NOT emit ProcessTree gap (since we captured successfully)
+    // But FileSystem gap should still be present
+    let mut gap_scopes = Vec::new();
+    for event in &events {
+        if let Observation::Runtime(runtime) = event.observation() {
+            if let RuntimeObservationKind::ObservationGap(gap) = runtime.kind() {
+                gap_scopes.push(gap.scope);
+            }
+        }
+    }
+    assert!(
+        gap_scopes.contains(&GapScope::FileSystem),
+        "should have FileSystem gap"
+    );
+    // For successful tree capture, ProcessTree gap should be absent (unless fast-exit BufferOverflow)
+    // Allow BufferOverflow gap but not Unsupported
+    let has_process_tree_unsupported = gap_scopes.iter().any(|s| *s == GapScope::ProcessTree);
+    // If we had a BufferOverflow due to fast exit, it's okay, but we shouldn't have Unsupported
+    // Check that if we have ProcessTree gap, its reason is BufferOverflow, not Unsupported
+    for event in &events {
+        if let Observation::Runtime(runtime) = event.observation() {
+            if let RuntimeObservationKind::ObservationGap(gap) = runtime.kind() {
+                if gap.scope == GapScope::ProcessTree {
+                    assert_eq!(
+                        GapReason::BufferOverflow,
+                        gap.reason,
+                        "ProcessTree gap if present should be BufferOverflow for fast-exit, not Unsupported"
+                    );
+                }
+            }
+        }
+    }
+
+    let _ = std::fs::remove_file(&db);
+    let _ = std::fs::remove_file(db.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db.with_extension("db-shm"));
+}
+
+#[test]
+fn run_fast_exiting_children_are_covered_or_gap() {
+    let db = temp_db_path("fast-exit");
+    let _ = std::fs::remove_file(&db);
+
+    // Spawn many fast-exiting children
+    let output = Command::new(binary())
+        .arg("run")
+        .arg("--db")
+        .arg(&db)
+        .arg("--")
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg("for i in $(seq 1 20); do /bin/true & done; wait")
+        .output()
+        .expect("spawn run fast-exit");
+
+    assert_eq!(0, output.status.code().unwrap());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let session_hex = stderr
+        .lines()
+        .find(|l| l.starts_with("session "))
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap();
+    let session_id = SessionId::from_u128(u128::from_str_radix(session_hex, 16).unwrap());
+    let store = SqliteEventStore::open(&db).expect("open db");
+    let events = store.load(session_id).expect("load");
+
+    let mut started_count = 0;
+    let mut gap_count = 0;
+    for event in &events {
+        if let Observation::Runtime(runtime) = event.observation() {
+            match runtime.kind() {
+                RuntimeObservationKind::ProcessStarted(_) => started_count += 1,
+                RuntimeObservationKind::ObservationGap(gap)
+                    if gap.scope == GapScope::ProcessTree =>
+                {
+                    gap_count += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Either we captured all 20+1 (root + 20) or we emitted a gap
+    // The test passes if we have a gap or we have at least some children
+    // For this slice, we want to ensure that if we missed fast children, we emit a gap
+    // So either started_count >= 21 (root + 20) or gap_count >= 1
+    assert!(
+        started_count >= 21 || gap_count >= 1,
+        "should either capture all fast children or emit a ProcessTree gap, got started={} gaps={}",
+        started_count,
+        gap_count
     );
 
     let _ = std::fs::remove_file(&db);
