@@ -1,11 +1,15 @@
 #![forbid(unsafe_code)]
 
 #[cfg(target_os = "linux")]
+use notify::Watcher;
+#[cfg(target_os = "linux")]
 use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "linux")]
 use std::ffi::OsString;
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStringExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 #[cfg(target_os = "linux")]
@@ -205,7 +209,6 @@ impl ExecutionCapture for LinuxCaptureAdapter {
             ) {
                 Ok(mut watcher) => {
                     // Try to watch the workspace recursively
-                    use notify::Watcher;
                     match watcher.watch(&workspace_path, notify::RecursiveMode::Recursive) {
                         Ok(()) => {
                             fs_watcher = Some(watcher);
@@ -241,13 +244,10 @@ impl ExecutionCapture for LinuxCaptureAdapter {
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::inherit());
         cmd.stderr(Stdio::inherit());
-        unsafe {
-            cmd.pre_exec(|| {
-                nix::unistd::setsid().map(|_| ()).map_err(|e| {
-                    std::io::Error::new(std::io::ErrorKind::Other, format!("setsid failed: {e}"))
-                })
-            });
-        }
+        // Use safe process_group(0) to create a new process group for killpg.
+        // This avoids the unsafe pre_exec+setsid under forbid(unsafe_code) while still
+        // allowing the recorder to terminate the whole descendant tree via killpg.
+        cmd.process_group(0);
 
         let mut child = match cmd.spawn() {
             Ok(child) => child,
