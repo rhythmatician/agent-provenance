@@ -170,8 +170,6 @@ impl ExecutionCapture for LinuxCaptureAdapter {
         request: &CaptureRequest,
         sink: &mut dyn ObservationSink,
     ) -> Result<CaptureOutcome, CaptureError> {
-        use std::os::unix::process::CommandExt;
-
         let process_source =
             ObservationSource::new(SourceId::from_u128(1), ObservationSourceKind::Process);
         let workspace_source =
@@ -239,7 +237,6 @@ impl ExecutionCapture for LinuxCaptureAdapter {
         // If watcher failed to setup, we will emit a gap later
         // Keep the watcher alive by holding it in fs_watcher variable
 
-        // Prepare child in its own process group via setsid
         let mut cmd = Command::new(Self::native_path_to_os_string(command.executable()));
         for arg in command.arguments() {
             cmd.arg(Self::native_string_to_os_string(arg));
@@ -248,10 +245,9 @@ impl ExecutionCapture for LinuxCaptureAdapter {
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::inherit());
         cmd.stderr(Stdio::inherit());
-        // Use safe process_group(0) to create a new process group for killpg.
-        // This avoids the unsafe pre_exec+setsid under forbid(unsafe_code) while still
-        // allowing the recorder to terminate the whole descendant tree via killpg.
-        cmd.process_group(0);
+        // Prepare child in its own session via setsid so killpg can terminate the whole tree.
+        // SAFETY: delegated to linux_process::setsid_in_child which is async-signal-safe.
+        crate::platform::linux_process::setsid_in_child(&mut cmd);
 
         let mut child = match cmd.spawn() {
             Ok(child) => child,

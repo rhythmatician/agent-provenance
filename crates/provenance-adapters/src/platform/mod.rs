@@ -5,4 +5,5 @@
 //! coverage, loss reporting, cancellation, and cleanup.
 
 pub mod linux;
+pub mod linux_process;
 pub mod windows;
