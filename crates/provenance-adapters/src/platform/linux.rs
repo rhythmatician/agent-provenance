@@ -622,7 +622,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                                 .collect(),
                             NativePath::from_unix_bytes(cwd.as_bytes().to_vec()),
                         );
-                        let _ = sink.record(RuntimeObservation::new(
+                        sink.record(RuntimeObservation::new(
                             process_source,
                             Self::now_observation_time(),
                             RuntimeObservationKind::ProcessStarted(ProcessStarted {
@@ -632,7 +632,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                                 command: cmd_spec,
                                 workspace_state: None,
                             }),
-                        ));
+                        ))?;
                         pid_to_instance.insert(pid, (instance_id, parent_instance, starttime));
                         instance_to_pid.insert(instance_id, pid);
                         seen_pids.insert(pid, starttime);
@@ -646,7 +646,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                                         termination: ProcessTermination::Unknown,
                                     },
                                 ),
-                            ));
+                            ))?;
                             exited_instances.insert(instance_id);
                         }
                     } else if state == 'Z' && ppid == root_pid {
@@ -658,7 +658,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                             NativePath::from_unix_bytes(b"/tmp".to_vec()),
                         );
                         let parent_instance = get_parent_instance(ppid, &pid_to_instance);
-                        let _ = sink.record(RuntimeObservation::new(
+                        sink.record(RuntimeObservation::new(
                             process_source,
                             Self::now_observation_time(),
                             RuntimeObservationKind::ProcessStarted(ProcessStarted {
@@ -668,8 +668,8 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                                 command: cmd_spec,
                                 workspace_state: None,
                             }),
-                        ));
-                        let _ = sink.record(RuntimeObservation::new(
+                        ))?;
+                        sink.record(RuntimeObservation::new(
                             process_source,
                             Self::now_observation_time(),
                             RuntimeObservationKind::ProcessExited(
@@ -678,7 +678,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                                     termination: ProcessTermination::Unknown,
                                 },
                             ),
-                        ));
+                        ))?;
                         pid_to_instance.insert(pid, (instance_id, parent_instance, starttime));
                         instance_to_pid.insert(instance_id, pid);
                         seen_pids.insert(pid, starttime);
@@ -696,19 +696,19 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                     continue;
                 }
                 if !Self::is_alive(*pid) {
-                    let _ = sink.record(RuntimeObservation::new(
+                    sink.record(RuntimeObservation::new(
                         process_source,
                         Self::now_observation_time(),
                         RuntimeObservationKind::ProcessExited(provenance_domain::ProcessExited {
                             process_id: *instance_id,
                             termination: ProcessTermination::Unknown,
                         }),
-                    ));
+                    ))?;
                     to_remove.push(*pid);
                     exited_instances.insert(*instance_id);
                 } else if let Some((_, state, _)) = Self::read_proc_stat(*pid) {
                     if state == 'Z' || state == 'X' || state == 'x' {
-                        let _ = sink.record(RuntimeObservation::new(
+                        sink.record(RuntimeObservation::new(
                             process_source,
                             Self::now_observation_time(),
                             RuntimeObservationKind::ProcessExited(
@@ -717,7 +717,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                                     termination: ProcessTermination::Unknown,
                                 },
                             ),
-                        ));
+                        ))?;
                         to_remove.push(*pid);
                         exited_instances.insert(*instance_id);
                     }
@@ -814,7 +814,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                             .collect(),
                         NativePath::from_unix_bytes(cwd.as_bytes().to_vec()),
                     );
-                    let _ = sink.record(RuntimeObservation::new(
+                    sink.record(RuntimeObservation::new(
                         process_source,
                         Self::now_observation_time(),
                         RuntimeObservationKind::ProcessStarted(ProcessStarted {
@@ -824,7 +824,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                             command: cmd_spec,
                             workspace_state: None,
                         }),
-                    ));
+                    ))?;
                     pid_to_instance.insert(pid, (instance_id, parent_instance, starttime));
                     instance_to_pid.insert(instance_id, pid);
                     seen_pids.insert(pid, starttime);
@@ -839,7 +839,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                                         termination: ProcessTermination::Unknown,
                                     },
                                 ),
-                            ));
+                            ))?;
                             exited_instances.insert(instance_id);
                         }
                     }
@@ -873,7 +873,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
             for pid in still_alive {
                 if let Some((instance_id, _, _)) = pid_to_instance.get(&pid) {
                     if !exited_instances.contains(instance_id) {
-                        let _ = sink.record(RuntimeObservation::new(
+                        sink.record(RuntimeObservation::new(
                             process_source,
                             Self::now_observation_time(),
                             RuntimeObservationKind::ProcessExited(
@@ -882,7 +882,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                                     termination: ProcessTermination::Unknown,
                                 },
                             ),
-                        ));
+                        ))?;
                         exited_instances.insert(*instance_id);
                     }
                 }
