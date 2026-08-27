@@ -445,7 +445,7 @@ fn run_captures_child_and_grandchild_with_correct_parent_links() {
     );
     // For successful tree capture, ProcessTree gap should be absent (unless fast-exit BufferOverflow)
     // Allow BufferOverflow gap but not Unsupported
-    let has_process_tree_unsupported = gap_scopes.iter().any(|s| *s == GapScope::ProcessTree);
+    let _has_process_tree = gap_scopes.contains(&GapScope::ProcessTree);
     // If we had a BufferOverflow due to fast exit, it's okay, but we shouldn't have Unsupported
     // Check that if we have ProcessTree gap, its reason is BufferOverflow, not Unsupported
     for event in &events {
