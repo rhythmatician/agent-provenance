@@ -599,16 +599,12 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                         }
                     }
                     let parent_instance = get_parent_instance(ppid, &pid_to_instance);
-                    let is_descendant = if ppid == root_pid {
+                    let is_descendant = if ppid == root_pid || pid_to_instance.contains_key(&ppid) {
                         true
-                    } else if pid_to_instance.contains_key(&ppid) {
-                        true
+                    } else if let Some((grand_ppid, _, _)) = Self::read_proc_stat(ppid) {
+                        grand_ppid == root_pid && !pid_to_instance.contains_key(&ppid)
                     } else {
-                        if let Some((grand_ppid, _, _)) = Self::read_proc_stat(ppid) {
-                            grand_ppid == root_pid && !pid_to_instance.contains_key(&ppid)
-                        } else {
-                            false
-                        }
+                        false
                     };
 
                     if is_descendant {
