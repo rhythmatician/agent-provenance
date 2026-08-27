@@ -15,4 +15,7 @@ pub use clock::Clock;
 pub use ids::IdGenerator;
 pub use recorder::{CompletedSession, RecordedEvent, RecorderError, SessionRecorder};
 pub use store::{EventStore, EventStoreError, ExpectedVersion};
-pub use validation::{EvidenceContinuity, EvidenceFreshness, assess_validation_freshness};
+pub use validation::{
+    CARGO_VALIDATION_RULE_VERSION, CargoValidation, CargoValidationKind, EvidenceContinuity,
+    EvidenceFreshness, assess_validation_freshness, classify_cargo_validation,
+};
