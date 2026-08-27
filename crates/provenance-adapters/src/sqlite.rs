@@ -33,6 +33,7 @@ impl SqliteEventStore {
             .map_err(|error| EventStoreError::Unavailable(error.to_string()))?;
         let store = Self { conn };
         store.init()?;
+        store.recover_incomplete_sessions()?;
         Ok(store)
     }
 
@@ -57,6 +58,7 @@ impl SqliteEventStore {
             .map_err(|error| EventStoreError::Unavailable(error.to_string()))?;
         let store = Self { conn };
         store.init()?;
+        store.recover_incomplete_sessions()?;
         Ok(store)
     }
 
@@ -78,6 +80,163 @@ impl SqliteEventStore {
                 );",
             )
             .map_err(|error| EventStoreError::Unavailable(error.to_string()))?;
+        Ok(())
+    }
+
+    fn recover_incomplete_sessions(&self) -> Result<(), EventStoreError> {
+        // Find sessions with SessionStarted but no SessionEnded, and append recorder-restart gap + aborted end.
+        // This is idempotent: if a session already has SessionEnded, we skip.
+        // For MVP we treat all sessions as owned and adopt them if incomplete.
+        // We need to query distinct session_ids and check each.
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT session_id FROM events")
+            .map_err(|e| EventStoreError::Unavailable(e.to_string()))?;
+        let session_ids: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| EventStoreError::Unavailable(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+        for session_id_text in session_ids {
+            // Check if session has SessionEnded
+            let has_ended: bool = {
+                let mut stmt2 = self
+                    .conn
+                    .prepare("SELECT observation_json FROM events WHERE session_id = ?1 ORDER BY sequence")
+                    .map_err(|e| EventStoreError::Unavailable(e.to_string()))?;
+                let rows = stmt2
+                    .query_map([session_id_text.clone()], |row| row.get::<_, String>(0))
+                    .map_err(|e| EventStoreError::Unavailable(e.to_string()))?;
+                let mut has = false;
+                for row in rows {
+                    let json = row.map_err(|e| EventStoreError::Unavailable(e.to_string()))?;
+                    if json.contains("\"type\":\"SessionEnded\"")
+                        || json.contains("\"SessionEnded\"")
+                    {
+                        // More robust: try to deserialize to check type, but simple string check for MVP
+                        // We check if the observation is SessionEnded by looking for "SessionEnded" in JSON
+                        // This is fragile but works for our DTO encoding where ObservationDto::SessionEnded serializes as {"type":"SessionEnded",...}
+                        if json.contains("SessionEnded") {
+                            has = true;
+                            break;
+                        }
+                    }
+                }
+                has
+            };
+            if has_ended {
+                continue;
+            }
+            // Incomplete session: append gap and aborted SessionEnded
+            // Find max sequence for this session
+            let max_seq: i64 = self
+                .conn
+                .query_row(
+                    "SELECT COALESCE(MAX(sequence), -1) FROM events WHERE session_id = ?1",
+                    [session_id_text.clone()],
+                    |row| row.get(0),
+                )
+                .map_err(|e| EventStoreError::Unavailable(e.to_string()))?;
+            let next_seq = max_seq + 1;
+            // Generate new event IDs and recorded_at
+            let mut id_bytes = [0u8; 16];
+            if getrandom::getrandom(&mut id_bytes).is_err() {
+                // Fallback to time-based
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                id_bytes = nanos.to_le_bytes()[0..16].try_into().unwrap_or([0u8; 16]);
+            }
+            let gap_event_id = format!("{:032x}", u128::from_le_bytes(id_bytes));
+            let mut id_bytes2 = [0u8; 16];
+            if getrandom::getrandom(&mut id_bytes2).is_err() {
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                id_bytes2 = (nanos ^ 0x9e3779b97f4a7c15u128).to_le_bytes()[0..16]
+                    .try_into()
+                    .unwrap_or([0u8; 16]);
+            }
+            let end_event_id = format!("{:032x}", u128::from_le_bytes(id_bytes2));
+            let recorded_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            // Prepare gap observation DTO
+            // We need to construct JSON for RuntimeObservation with GapScope::Recorder / RecorderRestarted
+            // For simplicity, we directly insert JSON strings for the two new events
+            // Gap event
+            let gap_observation_json = format!(
+                r#"{{"type":"Runtime","payload":{{"source":{{"id":"{:032x}","kind":"Recorder"}},"observed_at":{{"wall_clock":{recorded_at},"monotonic":null}},"kind":{{"kind":"ObservationGap","payload":{{"scope":"Recorder","reason":"RecorderRestarted","detail":"recorder restarted after crash"}}}}}}}}"#,
+                0u128
+            );
+            let end_observation_json =
+                r#"{"type":"SessionEnded","payload":{"outcome":"Aborted","final_workspace":null}}"#
+                    .to_owned();
+            // Use a transaction for atomicity
+            // For MVP we just execute two inserts; if one fails, the other may still be there, but idempotency will handle via has_ended check (now has SessionEnded, so next time skip)
+            // But we should ensure we don't duplicate gap if already inserted: check if last event is already RecorderRestarted gap
+            // For simplicity, we check if the last observation for this session already contains RecorderRestarted, then skip gap insertion
+            let last_json: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT observation_json FROM events WHERE session_id = ?1 ORDER BY sequence DESC LIMIT 1",
+                    [session_id_text.clone()],
+                    |row| row.get(0),
+                )
+                .ok();
+            let has_restart_gap = last_json
+                .as_ref()
+                .map(|s| s.contains("RecorderRestarted"))
+                .unwrap_or(false);
+            if !has_restart_gap {
+                self.conn
+                    .execute(
+                        "INSERT INTO events (session_id, sequence, event_id, schema_version, recorded_at, observation_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        rusqlite::params![
+                            session_id_text.clone(),
+                            next_seq,
+                            gap_event_id,
+                            1,
+                            recorded_at,
+                            gap_observation_json
+                        ],
+                    )
+                    .map_err(|e| EventStoreError::Unavailable(e.to_string()))?;
+                self.conn
+                    .execute(
+                        "INSERT INTO events (session_id, sequence, event_id, schema_version, recorded_at, observation_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        rusqlite::params![
+                            session_id_text.clone(),
+                            next_seq + 1,
+                            end_event_id,
+                            1,
+                            recorded_at + 1,
+                            end_observation_json
+                        ],
+                    )
+                    .map_err(|e| EventStoreError::Unavailable(e.to_string()))?;
+            } else {
+                // Already has gap, just ensure SessionEnded exists (it doesn't per has_ended check, so this branch shouldn't happen)
+                // But if has_restart_gap and no SessionEnded, we still need to add SessionEnded
+                self.conn
+                    .execute(
+                        "INSERT INTO events (session_id, sequence, event_id, schema_version, recorded_at, observation_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        rusqlite::params![
+                            session_id_text,
+                            next_seq,
+                            end_event_id,
+                            1,
+                            recorded_at,
+                            end_observation_json
+                        ],
+                    )
+                    .map_err(|e| EventStoreError::Unavailable(e.to_string()))?;
+            }
+        }
         Ok(())
     }
 
@@ -984,34 +1143,40 @@ mod tests {
                 .expect("append");
         }
         {
-            let mut store = SqliteEventStore::open(&path).expect("reopen file");
+            let store = SqliteEventStore::open(&path).expect("reopen file");
             store.init().expect("init idempotent on reopen");
             let events = store
                 .load(SessionId::from_u128(1))
                 .expect("load after reopen");
-            assert_eq!(1, events.len());
-            store
-                .append(
-                    ExpectedVersion::Exact(EventSequence::ZERO),
-                    EventEnvelope::new(
-                        EventId::from_u128(3),
-                        SessionId::from_u128(1),
-                        EventSequence::new(1),
-                        UnixNanos::new(11),
-                        Observation::SessionEnded(provenance_domain::SessionEnded::new(
-                            provenance_domain::SessionOutcome::Completed,
-                            None,
-                        )),
-                    ),
-                )
-                .expect("append after reopen");
+            // After ticket 8, incomplete sessions are recovered with a gap and Aborted end on open
+            assert_eq!(3, events.len());
+            assert_eq!(EventSequence::ZERO, events[0].sequence());
+            assert_eq!(EventSequence::new(1), events[1].sequence());
+            assert_eq!(EventSequence::new(2), events[2].sequence());
+            match events[1].observation() {
+                Observation::Runtime(rt) => match rt.kind() {
+                    RuntimeObservationKind::ObservationGap(gap) => {
+                        assert_eq!(GapScope::Recorder, gap.scope);
+                        assert_eq!(GapReason::RecorderRestarted, gap.reason);
+                    }
+                    other => panic!("expected recorder gap, got {other:?}"),
+                },
+                other => panic!("expected runtime gap, got {other:?}"),
+            }
+            match events[2].observation() {
+                Observation::SessionEnded(se) => {
+                    assert_eq!(provenance_domain::SessionOutcome::Aborted, se.outcome());
+                }
+                other => panic!("expected SessionEnded Aborted, got {other:?}"),
+            }
         }
         {
             let store = SqliteEventStore::open(&path).expect("third open");
             let events = store.load(SessionId::from_u128(1)).expect("load final");
-            assert_eq!(2, events.len());
+            // Recovery is idempotent: third open still has 3 events, not 5
+            assert_eq!(3, events.len());
             assert_eq!(EventSequence::ZERO, events[0].sequence());
-            assert_eq!(EventSequence::new(1), events[1].sequence());
+            assert_eq!(EventSequence::new(2), events[2].sequence());
         }
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
