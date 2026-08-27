@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/provenance-domain",
+    "crates/provenance-core",
+    "crates/provenance-adapters",
+    "crates/provenance-cli",
+    "tests/provenance-acceptance",
+]
+default-members = ["crates/provenance-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+rust_2018_idioms = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"

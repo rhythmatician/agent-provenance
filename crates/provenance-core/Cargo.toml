@@ -1,0 +1,12 @@
+[package]
+name = "provenance-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+provenance-domain = { path = "../provenance-domain" }
+
+[lints]
+workspace = true

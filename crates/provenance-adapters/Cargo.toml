@@ -1,0 +1,13 @@
+[package]
+name = "provenance-adapters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+provenance-domain = { path = "../provenance-domain" }
+provenance-core = { path = "../provenance-core" }
+
+[lints]
+workspace = true

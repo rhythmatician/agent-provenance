@@ -1,0 +1,6 @@
+# Factory control plane and protected workflow
+/AGENTS.md @rhythmatician
+/docs/agents/ @rhythmatician
+/.github/CODEOWNERS @rhythmatician
+/.github/workflows/ @rhythmatician
+/.sandcastle/ @rhythmatician

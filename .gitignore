@@ -1,0 +1,10 @@
+/target/
+/.provenance/
+/.scratch/
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
