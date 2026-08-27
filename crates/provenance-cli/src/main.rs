@@ -7,8 +7,13 @@ use std::process::ExitCode;
 use provenance_core::{EventStore, EventStoreError};
 use provenance_domain::EVENT_SCHEMA_VERSION;
 
+mod projections;
 mod timeline;
 
+use projections::{
+    format_changes_human, format_changes_json, format_processes_human, format_processes_json,
+    format_state_human, format_state_json,
+};
 use timeline::{format_human, format_json, load_events, parse_session_id, resolve_db_path};
 
 fn main() -> ExitCode {
@@ -42,6 +47,9 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> u8 {
             0
         }
         "timeline" => run_timeline(&arguments),
+        "processes" => run_processes(&arguments),
+        "changes" => run_changes(&arguments),
+        "state" => run_state(&arguments),
         "run" => run_run(&arguments),
         other => {
             eprintln!("unknown command: {other}");
@@ -172,6 +180,163 @@ fn run_timeline(arguments: &[OsString]) -> u8 {
         }
     } else {
         let human = format_human(session_id, &events);
+        print!("{human}");
+        0
+    }
+}
+
+fn run_processes(arguments: &[OsString]) -> u8 {
+    run_projection(
+        arguments,
+        "processes",
+        format_processes_human,
+        format_processes_json,
+    )
+}
+
+fn run_changes(arguments: &[OsString]) -> u8 {
+    run_projection(
+        arguments,
+        "changes",
+        format_changes_human,
+        format_changes_json,
+    )
+}
+
+fn run_state(arguments: &[OsString]) -> u8 {
+    run_projection(arguments, "state", format_state_human, format_state_json)
+}
+
+fn run_projection(
+    arguments: &[OsString],
+    name: &str,
+    format_human_fn: fn(
+        provenance_domain::SessionId,
+        &[provenance_domain::EventEnvelope],
+    ) -> String,
+    format_json_fn: fn(
+        provenance_domain::SessionId,
+        &[provenance_domain::EventEnvelope],
+    ) -> Result<String, String>,
+) -> u8 {
+    let mut session_id_raw: Option<OsString> = None;
+    let mut db_path: Option<std::path::PathBuf> = None;
+    let mut format = String::from("human");
+
+    let mut iter = arguments.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.to_str() else {
+            eprintln!("argument is not valid UTF-8");
+            return 2;
+        };
+        match text {
+            "--db" | "--database" => {
+                let Some(value) = iter.next() else {
+                    eprintln!("--db requires a value");
+                    return 2;
+                };
+                let Some(value_str) = value.to_str() else {
+                    eprintln!("--db value is not valid UTF-8");
+                    return 2;
+                };
+                db_path = Some(std::path::PathBuf::from(value_str));
+            }
+            "--format" => {
+                let Some(value) = iter.next() else {
+                    eprintln!("--format requires a value (human|json)");
+                    return 2;
+                };
+                let Some(value_str) = value.to_str() else {
+                    eprintln!("--format value is not valid UTF-8");
+                    return 2;
+                };
+                if value_str != "human" && value_str != "json" {
+                    eprintln!("--format must be human or json");
+                    return 2;
+                }
+                format = value_str.to_owned();
+            }
+            "--json" => {
+                format = "json".to_owned();
+            }
+            "--help" | "-h" => {
+                eprintln!(
+                    "usage: provenance {name} <SESSION_ID> [--db <PATH>] [--format human|json]"
+                );
+                return 0;
+            }
+            other if other.starts_with('-') => {
+                eprintln!("unknown option for {name}: {other}");
+                return 2;
+            }
+            _ => {
+                if session_id_raw.is_none() {
+                    session_id_raw = Some(arg.clone());
+                } else {
+                    eprintln!("unexpected argument: {text}");
+                    return 2;
+                }
+            }
+        }
+    }
+
+    let Some(session_raw) = session_id_raw else {
+        eprintln!("{name} requires a session id");
+        return 2;
+    };
+    let Some(session_str) = session_raw.to_str() else {
+        eprintln!("session id is not valid UTF-8");
+        return 2;
+    };
+
+    let session_id = match parse_session_id(session_str) {
+        Ok(id) => id,
+        Err(detail) => {
+            eprintln!("invalid session id: {detail}");
+            return 2;
+        }
+    };
+
+    let db_path = resolve_db_path(db_path.as_deref());
+
+    let events = match load_events(&db_path, session_id) {
+        Ok(events) => events,
+        Err(provenance_core::EventStoreError::Corrupt(detail)) => {
+            eprintln!("corrupt row for session {}: {detail}", session_str);
+            return 4;
+        }
+        Err(provenance_core::EventStoreError::Unavailable(detail)) => {
+            if detail.to_lowercase().contains("corrupt") {
+                eprintln!("corrupt row for session {}: {detail}", session_str);
+                return 4;
+            }
+            eprintln!("event store unavailable: {detail}");
+            return 5;
+        }
+        Err(other) => {
+            eprintln!("failed to load session {}: {other}", session_str);
+            return 5;
+        }
+    };
+
+    if events.is_empty() {
+        eprintln!("unknown session: {session_str}");
+        return 3;
+    }
+
+    if format == "json" {
+        match format_json_fn(session_id, &events) {
+            Ok(json) => {
+                println!("{json}");
+                0
+            }
+            Err(error) => {
+                eprintln!("failed to render json: {error}");
+                5
+            }
+        }
+    } else {
+        let human = format_human_fn(session_id, &events);
         print!("{human}");
         0
     }
@@ -373,7 +538,7 @@ fn os_string_to_native_path(value: &OsString) -> provenance_domain::NativePath {
 
 fn print_help() {
     println!(
-        "provenance {version}\n\nUSAGE:\n    provenance <COMMAND>\n\nCOMMANDS:\n    run             Execute a command and record its process lifecycle\n    timeline        Show the ordered event stream for a session\n    schema-version  Print the raw-event schema version\n    version         Print the binary version\n    help            Print this help\n\nRun `provenance <COMMAND> --help` for more information.",
+        "provenance {version}\n\nUSAGE:\n    provenance <COMMAND>\n\nCOMMANDS:\n    run             Execute a command and record its process lifecycle\n    timeline        Show the ordered event stream for a session\n    processes       Show process-tree projection for a session\n    changes         Show file-mutation projection for a session\n    state           Show workspace-state projection for a session\n    schema-version  Print the raw-event schema version\n    version         Print the binary version\n    help            Print this help\n\nRun `provenance <COMMAND> --help` for more information.",
         version = env!("CARGO_PKG_VERSION")
     );
 }

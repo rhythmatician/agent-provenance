@@ -17,50 +17,50 @@ use provenance_domain::{
 pub const OUTPUT_SCHEMA_VERSION: u16 = 1;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct NativeStringDto {
+pub struct NativeStringDto {
     encoding: String,
     bytes_base64: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct CommandSpecDto {
+pub struct CommandSpecDto {
     executable: NativeStringDto,
     arguments: Vec<NativeStringDto>,
     working_directory: NativeStringDto,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct ContentDigestDto {
+pub struct ContentDigestDto {
     algorithm: String,
     bytes_base64: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct WorkspaceStateDto {
+pub struct WorkspaceStateDto {
     generation: u64,
     digest: Option<ContentDigestDto>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct WorkspaceTransitionDto {
+pub struct WorkspaceTransitionDto {
     previous: WorkspaceStateDto,
     current: WorkspaceStateDto,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct ObservationTimeDto {
+pub struct ObservationTimeDto {
     wall_clock: Option<i64>,
     monotonic: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct ObservationSourceDto {
+pub struct ObservationSourceDto {
     id: String,
     kind: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct ProcessStartedDto {
+pub struct ProcessStartedDto {
     process_id: String,
     parent_process_id: Option<String>,
     operating_system_pid: Option<u32>,
@@ -70,21 +70,21 @@ struct ProcessStartedDto {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "kind")]
-enum ProcessTerminationDto {
+pub enum ProcessTerminationDto {
     ExitCode { code: i32 },
     Signal { signal: i32 },
     Unknown,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct ProcessExitedDto {
+pub struct ProcessExitedDto {
     process_id: String,
     termination: ProcessTerminationDto,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "kind")]
-enum FileMutationKindDto {
+pub enum FileMutationKindDto {
     Created,
     Modified,
     Deleted,
@@ -92,19 +92,19 @@ enum FileMutationKindDto {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct FileMutationObservedDto {
+pub struct FileMutationObservedDto {
     path: NativeStringDto,
     kind: FileMutationKindDto,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct WorkspaceStateAdvancedDto {
+pub struct WorkspaceStateAdvancedDto {
     transition: WorkspaceTransitionDto,
     cause_event: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct ObservationGapDto {
+pub struct ObservationGapDto {
     scope: String,
     reason: String,
     detail: String,
@@ -112,7 +112,7 @@ struct ObservationGapDto {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "kind", content = "payload")]
-enum RuntimeObservationKindDto {
+pub enum RuntimeObservationKindDto {
     ProcessStarted(ProcessStartedDto),
     ProcessExited(ProcessExitedDto),
     FileMutationObserved(FileMutationObservedDto),
@@ -121,27 +121,27 @@ enum RuntimeObservationKindDto {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct RuntimeObservationDto {
+pub struct RuntimeObservationDto {
     source: ObservationSourceDto,
     observed_at: ObservationTimeDto,
     kind: RuntimeObservationKindDto,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct SessionStartedDto {
+pub struct SessionStartedDto {
     command: CommandSpecDto,
     initial_workspace: Option<WorkspaceStateDto>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct SessionEndedDto {
+pub struct SessionEndedDto {
     outcome: String,
     final_workspace: Option<WorkspaceStateDto>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "type", content = "payload")]
-enum ObservationDto {
+pub enum ObservationDto {
     SessionStarted(SessionStartedDto),
     Runtime(RuntimeObservationDto),
     SessionEnded(SessionEndedDto),
@@ -149,12 +149,12 @@ enum ObservationDto {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct EventDto {
-    schema_version: u16,
-    event_id: String,
-    session_id: String,
-    sequence: u64,
-    recorded_at: i64,
-    observation: ObservationDto,
+    pub schema_version: u16,
+    pub event_id: String,
+    pub session_id: String,
+    pub sequence: u64,
+    pub recorded_at: i64,
+    pub observation: ObservationDto,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -336,7 +336,7 @@ fn observation_to_dto(observation: &Observation) -> ObservationDto {
     }
 }
 
-fn event_to_dto(envelope: &EventEnvelope) -> EventDto {
+pub(crate) fn event_to_dto(envelope: &EventEnvelope) -> EventDto {
     EventDto {
         schema_version: envelope.schema_version(),
         event_id: format!("{:032x}", envelope.event_id().as_u128()),
