@@ -166,6 +166,45 @@ impl LinuxCaptureAdapter {
 }
 
 #[cfg(target_os = "linux")]
+fn is_path_in_scope(
+    path: &std::path::Path,
+    workspace: &std::path::Path,
+    db_path: &std::path::Path,
+) -> bool {
+    // Exclude recorder-owned files: .provenance/ and the DB file itself (and its wal/shm)
+    // Exclude build outputs and VCS: target/, .git/, and common generated dirs
+    let Ok(relative) = path.strip_prefix(workspace) else {
+        return false;
+    };
+    let first_component = relative
+        .components()
+        .next()
+        .and_then(|c| c.as_os_str().to_str())
+        .unwrap_or("");
+    // Always exclude these top-level dirs
+    if first_component == ".provenance" || first_component == ".git" || first_component == "target"
+    {
+        return false;
+    }
+    // Exclude the DB file and its WAL/SHM if they are inside workspace (default is .provenance/provenance.db)
+    if path == db_path
+        || path == db_path.with_extension("db-wal")
+        || path == db_path.with_extension("db-shm")
+    {
+        return false;
+    }
+    // Also exclude any path that is under .provenance or target even if nested (defensive)
+    for comp in relative.components() {
+        if let Some(s) = comp.as_os_str().to_str() {
+            if s == ".provenance" || s == "target" || s == ".git" {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+#[cfg(target_os = "linux")]
 impl ExecutionCapture for LinuxCaptureAdapter {
     fn capture(
         &mut self,
@@ -457,8 +496,20 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                             )) = event.kind
                             {
                                 if event.paths.len() == 2 {
+                                    let db_path =
+                                        working_dir_path.join(".provenance").join("provenance.db");
                                     if event.paths[0].strip_prefix(&working_dir_path).is_ok()
                                         && event.paths[1].strip_prefix(&working_dir_path).is_ok()
+                                        && is_path_in_scope(
+                                            &event.paths[0],
+                                            &working_dir_path,
+                                            &db_path,
+                                        )
+                                        && is_path_in_scope(
+                                            &event.paths[1],
+                                            &working_dir_path,
+                                            &db_path,
+                                        )
                                     {
                                         let from = Self::path_to_native_path(&event.paths[0]);
                                         let to = Self::path_to_native_path(&event.paths[1]);
@@ -500,6 +551,13 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                             // Map other notify events to FileMutationObserved per path
                             for path in &event.paths {
                                 if path.strip_prefix(&working_dir_path).is_err() {
+                                    continue;
+                                }
+                                // Enforce Workspace Scope: exclude recorder storage and build outputs
+                                // DB is at .provenance/provenance.db relative to workspace
+                                let db_path =
+                                    working_dir_path.join(".provenance").join("provenance.db");
+                                if !is_path_in_scope(path, &working_dir_path, &db_path) {
                                     continue;
                                 }
                                 let native_path = Self::path_to_native_path(path);
@@ -740,6 +798,11 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                         // Similar handling as above, but simplified: just emit Created/Modified etc
                         for path in event.paths {
                             if path.strip_prefix(&working_dir_path).is_err() {
+                                continue;
+                            }
+                            let db_path =
+                                working_dir_path.join(".provenance").join("provenance.db");
+                            if !is_path_in_scope(&path, &working_dir_path, &db_path) {
                                 continue;
                             }
                             let native_path = Self::path_to_native_path(&path);
