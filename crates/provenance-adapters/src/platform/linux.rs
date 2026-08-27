@@ -848,7 +848,7 @@ impl ExecutionCapture for LinuxCaptureAdapter {
         }
 
         let mut still_alive: Vec<u32> = Vec::new();
-        for (pid, _) in pid_to_instance.iter() {
+        for pid in pid_to_instance.keys() {
             if *pid == root_pid {
                 continue;
             }
