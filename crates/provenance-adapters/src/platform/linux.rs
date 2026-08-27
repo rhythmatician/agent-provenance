@@ -633,6 +633,9 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                         instance_to_pid.insert(instance_id, pid);
                         seen_pids.insert(pid, starttime);
                         if state == 'Z' || state == 'X' || state == 'x' {
+                            if state == 'Z' {
+                                missed_fast_exit = true;
+                            }
                             sink.record(RuntimeObservation::new(
                                 process_source,
                                 Self::now_observation_time(),
@@ -704,6 +707,9 @@ impl ExecutionCapture for LinuxCaptureAdapter {
                     exited_instances.insert(*instance_id);
                 } else if let Some((_, state, _)) = Self::read_proc_stat(*pid) {
                     if state == 'Z' || state == 'X' || state == 'x' {
+                        if state == 'Z' {
+                            missed_fast_exit = true;
+                        }
                         sink.record(RuntimeObservation::new(
                             process_source,
                             Self::now_observation_time(),
@@ -909,6 +915,13 @@ impl ExecutionCapture for LinuxCaptureAdapter {
         };
 
         let was_cancelled = terminated.load(Ordering::Relaxed);
+        if was_cancelled {
+            sink.record(RuntimeObservation::recorder_gap(
+                GapScope::ProcessTree,
+                GapReason::Unknown,
+                "process tree terminated due to cancellation".to_owned(),
+            ))?;
+        }
 
         sink.record(RuntimeObservation::new(
             process_source,
