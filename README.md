@@ -31,4 +31,4 @@ cargo run -p provenance-cli -- --help
 ./scripts/verify.ps1
 ```
 
-Canonical domain language is in [`CONTEXT.md`](CONTEXT.md). Architectural rationale is in [`docs/adr/`](docs/adr/). The documentation authority index is [`docs/INDEX.md`](docs/INDEX.md).
+Canonical domain language is in [`GLOSSARY.md`](GLOSSARY.md). Architectural rationale is in [`docs/adr/`](docs/adr/). The documentation authority index is [`docs/INDEX.md`](docs/INDEX.md).

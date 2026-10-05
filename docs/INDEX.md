@@ -4,7 +4,7 @@
 
 1. Code, tests, contracts, and configuration: current behavior and mechanics.
 2. GitHub Issues and pull requests: requirements, work state, and implementation history.
-3. `CONTEXT.md`: canonical domain language.
+3. `GLOSSARY.md`: canonical domain language.
 4. Accepted ADRs under `docs/adr/`: architectural rationale.
 5. Version-pinned external references: expensive-to-reconstruct grounding.
 6. Git history: historical evidence.

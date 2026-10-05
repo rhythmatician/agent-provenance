@@ -25,7 +25,7 @@ Canonical triage roles map 1:1 to `needs-triage`, `needs-info`, `ready-for-agent
 
 ### Domain docs
 
-This is a single-context repository: `CONTEXT.md` contains domain language and `docs/adr/` contains architectural rationale. See `docs/agents/domain.md`.
+This is a single-context repository: `GLOSSARY.md` contains domain language and `docs/adr/` contains architectural rationale. See `docs/agents/domain.md`.
 
 ### Workflow
 
@@ -33,4 +33,4 @@ Wayfinder owns uncertain human-in-the-loop planning. Sandcastle may execute only
 
 ### Documentation
 
-Code, tests, contracts, and configuration own current mechanics. GitHub owns requirements and work state. `CONTEXT.md` owns domain language. ADRs own architectural rationale. Do not commit implementation summaries, plans, TODO/status documents, or prose that duplicates executable truth. See `docs/agents/documentation.md` and `docs/INDEX.md`.
+Code, tests, contracts, and configuration own current mechanics. GitHub owns requirements and work state. `GLOSSARY.md` owns domain language. ADRs own architectural rationale. Do not commit implementation summaries, plans, TODO/status documents, or prose that duplicates executable truth. See `docs/agents/documentation.md` and `docs/INDEX.md`.

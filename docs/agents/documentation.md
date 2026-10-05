@@ -8,9 +8,9 @@ Current behavior, structure, interfaces, contracts, configuration, supported sta
 
 Do not commit standalone implementation summaries, architecture summaries, project outlines, TODO lists, status reports, deliverables lists, or manually synchronized implementation inventories.
 
-## `CONTEXT.md` owns domain language only
+## `GLOSSARY.md` owns domain language only
 
-`CONTEXT.md` defines project-specific concepts and canonical terms. It must not contain implementation details, plans, TODOs, status, file inventories, or algorithms.
+`GLOSSARY.md` defines project-specific concepts and canonical terms. It must not contain implementation details, plans, TODOs, status, file inventories, or algorithms.
 
 ## ADRs own architectural rationale
 
